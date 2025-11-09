@@ -1,0 +1,13 @@
+streamlit
+
+gensim
+
+numpy
+
+pandas
+
+scikit-learn
+
+matplotlib
+
+altair
