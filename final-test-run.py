@@ -1,197 +1,213 @@
-import os, re
+# ============================================
+# 🧠 Embedding Comparison Dashboard (Final Test Run v1.0)
+# ============================================
+import streamlit as st
 import numpy as np
 import pandas as pd
-import streamlit as st
-import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
 from sklearn.decomposition import PCA
+from sklearn.metrics.pairwise import cosine_similarity
 
-st.set_page_config(page_title="Embedding Comparison Dashboard", layout="wide")
-PRIMARY = "#6AA6FF"
+# --- Page config ---
+st.set_page_config(
+    page_title="Embedding Comparison Dashboard",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
-st.markdown("<h1>🧠 Embedding Comparison Dashboard</h1>", unsafe_allow_html=True)
-
-with st.expander("📘 Instructions (click to collapse)", expanded=True):
-    st.markdown("""
-        **Usage:**
-        - Enter up to four equations (e.g., `love - hate`, `king - man + woman`, `love * hate`)
-        - Press <kbd>Tab</kbd> or <kbd>Return</kbd> to update results
-        - Scroll through 100-dimension vector tables and per-dimension stats
-        - Compare equations across semantic, PCA, and cosine similarity maps
-    """)
-
-VEC_FILE = "glove_top10k_100d.txt"
-
-@st.cache_data(show_spinner=True)
-def load_vectors(path):
-    words, vecs = [], []
-    with open(path, "r", encoding="utf8") as f:
+# --- Load GloVe subset ---
+@st.cache_data
+def load_glove(file_path="glove_top10k_100d.txt"):
+    embeddings = {}
+    with open(file_path, "r", encoding="utf8") as f:
         for line in f:
-            parts = line.strip().split()
-            if len(parts) == 101 and re.fullmatch(r"[a-zA-Z]+", parts[0]):
-                words.append(parts[0].lower())
-                vecs.append(np.array(parts[1:], dtype=np.float32))
-    mat = np.vstack(vecs)
-    return {"words": words, "word2idx": {w:i for i,w in enumerate(words)}, "matrix": mat}
+            parts = line.split()
+            word, vec = parts[0], np.array(parts[1:], dtype=np.float32)
+            embeddings[word] = vec
+    return embeddings
 
-emb = load_vectors(VEC_FILE)
+embeddings = load_glove()
 
-def get_vec(w):
-    i = emb["word2idx"].get(w.lower())
-    return emb["matrix"][i] if i is not None else None
+# --- Utility functions ---
+def vector_op(eq):
+    tokens = eq.lower().split()
+    vec = np.zeros(100)
+    op = "+"
+    for token in tokens:
+        if token in {"+", "-", "*", "/"}:
+            op = token
+        elif token in embeddings:
+            if op == "+": vec += embeddings[token]
+            elif op == "-": vec -= embeddings[token]
+            elif op == "*": vec *= embeddings[token]
+            elif op == "/": vec /= np.where(embeddings[token] != 0, embeddings[token], 1)
+    return vec
 
-def unit(v):
-    n = np.linalg.norm(v)
-    return v / n if n != 0 else v
+def top_k_similar(vec, k=10):
+    words, sims = [], []
+    for w, v in embeddings.items():
+        sim = np.dot(vec, v) / (np.linalg.norm(vec)*np.linalg.norm(v))
+        words.append(w)
+        sims.append(sim)
+    df = pd.DataFrame({"Word": words, "Similarity": sims})
+    df = df.sort_values("Similarity", ascending=False).head(k)
+    return df
 
-def cosine(a, b):
-    na, nb = np.linalg.norm(a), np.linalg.norm(b)
-    return float(np.dot(a, b) / (na * nb)) if na*nb != 0 else 0.0
+# --- Header ---
+st.title("🧠 Embedding Comparison Dashboard")
 
-def equation_vector(expr):
-    tokens = expr.strip().split()
-    if not tokens: return None, []
-    v = get_vec(tokens[0]); used = [tokens[0]]
-    if v is None: return None, used
-    i = 1
-    while i + 1 < len(tokens):
-        op, t = tokens[i], tokens[i+1]; vt = get_vec(t); used.append(t)
-        if vt is None: return None, used
-        if op == "+": v = v + vt
-        elif op == "-": v = v - vt
-        elif op == "*": v = v * vt
-        elif op == "/": v = v / np.where(vt == 0, 1e-8, vt)
-        i += 2
-    return v.astype(np.float32), used
+# --- Instructions block ---
+with st.expander("📘 Instructions (click to expand)"):
+    st.markdown("""
+### 🧠 Overview
+This dashboard explores **semantic relationships between words** using pre-trained [GloVe](https://nlp.stanford.edu/projects/glove/) embeddings.  
+Each word is represented as a **100-dimensional vector**, and vector arithmetic reveals how meanings shift in embedding space.
 
-def top_k_similar(target_vec, k, exclude):
-    A = emb["matrix"]; tv = unit(target_vec)
-    AV = A / (np.linalg.norm(A, axis=1, keepdims=True) + 1e-8)
-    sims = AV @ tv
-    mask = np.ones(len(emb["words"]), bool)
-    for w in exclude:
-        idx = emb["word2idx"].get(w.lower())
-        if idx is not None: mask[idx] = False
-    sims_masked = np.where(mask, sims, -np.inf)
-    top_idx = np.argpartition(-sims_masked, np.arange(k))[:k]
-    top_idx = top_idx[np.argsort(-sims_masked[top_idx])]
-    words = [emb["words"][i] for i in top_idx]; vals = sims[top_idx]
-    return words, vals, top_idx
+---
 
-def dims_df(idxs):
-    vecs = emb["matrix"][idxs]
-    cols = [f"dim_{i+1}" for i in range(vecs.shape[1])]
-    return pd.DataFrame(vecs, columns=cols, index=[emb["words"][i] for i in idxs])
+### ✏️ How to Use
+1. Enter up to **four equations** — for example:  
+   `king - man + woman` or `love - hate`
+2. Choose how many **Top-K similar words** to display.  
+3. The dashboard will show:
+   - **Top-K Semantic Matches** (bar chart)
+   - **Semantic Space (PCA Projection)**
+   - **Cosine Similarity Matrix**
+   - **Detailed 100-Dimensional Word Vectors**
+   - **Aggregate Statistics Table**  
+     *(mean, median, variance, std. dev., min, max)*
 
-def stats_df(idxs):
-    vecs = emb["matrix"][idxs]
-    return pd.DataFrame({
-        "mean": vecs.mean(axis=0),
-        "median": np.median(vecs, axis=0),
-        "std": vecs.std(axis=0),
-        "var": vecs.var(axis=0)
-    }, index=[f"dim_{i+1}" for i in range(vecs.shape[1])])
+---
 
+### ⚙️ Technical Details
+Cosine similarity measures how close two words are in meaning:
+""")
+    st.latex(r"\text{cosine\_similarity}(A, B) = \frac{A \cdot B}{|A| \, |B|}")
+    st.markdown("""
+Principal Component Analysis (PCA) reduces high-dimensional vectors to 2-D for easier visualization while preserving the main variance in meaning.
+
+Supported vector operations include:
+- Addition (`+`)
+- Subtraction (`-`)
+- Multiplication (`*`)
+- Division (`/`)
+
+---
+
+### 🧩 Notes
+- Uses **GloVe 6B (100d)** embedding subset.
+- Processes **top 10 000 alphabetic words**.
+- Results are **cached** for faster updates.
+- Layout automatically scales for side-by-side comparisons.
+
+Enjoy exploring the geometry of language! 🌐
+""")
+
+# --- Input controls ---
 cols = st.columns(4)
-eqs = [cols[0].text_input("Equation 1","love - hate"),
-       cols[1].text_input("Equation 2","love / hate"),
-       cols[2].text_input("Equation 3","hate / love"),
-       cols[3].text_input("Equation 4","love * hate")]
-top_k = st.slider("Select Top-K Similar Words", 5, 25, 10)
-min_rows = max(15, top_k)
+eqs = [c.text_input(f"Equation {i+1}") for i, c in enumerate(cols)]
+k = st.slider("Select Top-K Similar Words", 5, 20, 10)
 
-eq_vecs, used_tokens = [], []
-for e in eqs:
-    v, used = equation_vector(e)
-    eq_vecs.append(v); used_tokens.append(set(used))
+# --- Display Top-K results ---
+st.markdown("## 📊 Top-K Semantic Matches per Equation")
 
-# ---- Top-K Horizontal Bars ----
-st.subheader("📊 Top-K Semantic Matches per Equation")
-bar_cols = st.columns(4)
-top_indices = []
+non_empty_eqs = [e for e in eqs if e.strip()]
+vectors, labels = [], []
 
-for i, (col, v, used) in enumerate(zip(bar_cols, eq_vecs, used_tokens)):
-    with col:
-        if v is None:
-            st.warning(f"❌ Could not parse `{eqs[i]}`")
-            top_indices.append([]); continue
-        words, vals, idxs = top_k_similar(v, top_k, used)
-        top_indices.append(list(idxs))
-        fig, ax = plt.subplots(figsize=(4.6,3.0), dpi=150, facecolor="white")
-        ax.set_facecolor("white")
-        ax.barh(range(len(words)), vals[::-1], color=PRIMARY, align="center", height=0.6)
-        ax.set_yticks(range(len(words))); ax.set_yticklabels(words[::-1])
-        ax.invert_yaxis()
-        for j,vv in enumerate(vals[::-1]):
-            ax.text(vv + 0.02, j, f"{vv:.2f}", va="center", fontsize=9)
-        ax.set_xlabel("Cosine Similarity"); ax.set_title(eqs[i], fontsize=13)
-        ax.grid(axis="x", alpha=0.3, linestyle=":")
-        st.pyplot(fig, clear_figure=True, use_container_width=False)
+if non_empty_eqs:
+    cols = st.columns(len(non_empty_eqs))
+    for i, eq in enumerate(non_empty_eqs):
+        vec = vector_op(eq)
+        df = top_k_similar(vec, k)
+        fig = px.bar(df, x="Similarity", y="Word", orientation="h",
+                     color_discrete_sequence=["#60A5FA"], text="Similarity")
+        fig.update_traces(texttemplate="%{text:.2f}", textposition="outside")
+        fig.update_layout(yaxis=dict(autorange="reversed"), height=300)
+        cols[i].plotly_chart(fig, use_container_width=True)
+        vectors.append(vec)
+        labels.append(eq)
+else:
+    st.info("👆 Enter at least one valid equation to view results.")
 
-# ---- Data Tables ----
-st.markdown("---"); st.subheader("Detailed Tables (Vectors & Stats)")
-tcols = st.columns(4)
-for i,col in enumerate(tcols):
-    with col:
-        idxs = top_indices[i][:min_rows]
-        if not idxs: continue
-        st.markdown(f"**{eqs[i]} — Top-{len(idxs)} Word Vectors (100 dims)**")
-        st.dataframe(dims_df(idxs), height=360, use_container_width=True)
-        st.markdown(f"**{eqs[i]} — Per-Dimension Summary**")
-        st.dataframe(stats_df(idxs), height=360, use_container_width=True)
+# --- Detailed tables ---
+st.markdown("## 📚 Detailed Tables (Vectors & Stats)")
+if vectors:
+    for label, vec in zip(labels, vectors):
+        df = pd.DataFrame([embeddings[w] for w in top_k_similar(vec, k)["Word"]],
+                          index=top_k_similar(vec, k)["Word"]).T
+        st.markdown(f"**{label} — Top-{k} Word Vectors (100 dims)**")
+        st.dataframe(df, height=350)
 
-# ---- Semantic Space ----
-st.markdown("---"); st.subheader("🧭 Semantic Space (2D PCA)")
-valid = [(n,v) for n,v in zip(eqs,eq_vecs) if v is not None]
-if len(valid)>=2:
-    names=[n for n,_ in valid]; M=np.vstack([unit(v) for _,v in valid])
-    p2=PCA(n_components=2).fit_transform(M)
-    fig,ax=plt.subplots(figsize=(6.5,4.5),dpi=130)
-    colors=plt.cm.tab10.colors
-    for i,(name,pt) in enumerate(zip(names,p2)):
-        ax.scatter(pt[0],pt[1],s=130,color=colors[i])
-        ax.text(pt[0]+0.02,pt[1]+0.02,name,fontsize=13,weight="bold")
-    ax.set_title("Semantic Space (2D PCA)",fontsize=15)
-    ax.grid(alpha=0.3,linestyle=":")
-    st.pyplot(fig,clear_figure=True)
+    # --- Aggregate statistics ---
+    all_vecs = np.array(vectors)
+    stats = pd.DataFrame({
+        "Mean": np.mean(all_vecs, axis=0),
+        "Median": np.median(all_vecs, axis=0),
+        "Variance": np.var(all_vecs, axis=0),
+        "Std Dev": np.std(all_vecs, axis=0),
+        "Min": np.min(all_vecs, axis=0),
+        "Max": np.max(all_vecs, axis=0),
+    })
+    st.markdown("### 📈 Aggregate Statistics (per dimension)")
+    st.dataframe(stats, height=300)
 
-# ---- PCA Projection ----
-st.subheader("📍 PCA Projection (Equations + Top-3 Words)")
-pts,lbls,cols_used=[],[],[]
-for i,(name,v,idxs) in enumerate(zip(eqs,eq_vecs,top_indices)):
-    if v is None: continue
-    pts.append(unit(v)); lbls.append(name); cols_used.append(plt.cm.tab10.colors[i])
-    for j in idxs[:3]:
-        pts.append(unit(emb["matrix"][j])); lbls.append(emb["words"][j])
-        cols_used.append(plt.cm.tab10.colors[i])
-if len(pts)>=2:
-    p=PCA(n_components=2).fit_transform(np.vstack(pts))
-    fig,ax=plt.subplots(figsize=(6.5,4.5),dpi=130)
-    ax.scatter(p[:,0],p[:,1],c=cols_used,s=40)
-    for (x,y),lab in zip(p,lbls):
-        ax.text(x+0.02,y+0.02,lab,fontsize=12)
-    ax.set_title("PCA Projection (Equations + Top-3 Words)",fontsize=15)
-    ax.grid(alpha=0.3,linestyle=":")
-    st.pyplot(fig,clear_figure=True)
+# --- PCA projection ---
+if len(vectors) >= 2:
+    st.markdown("## 🧭 Semantic Space (2-D PCA Projection)")
+    pca = PCA(n_components=2)
+    pts = pca.fit_transform(np.vstack(vectors))
+    fig = go.Figure()
+    for i, lbl in enumerate(labels):
+        fig.add_trace(go.Scatter(
+            x=[pts[i,0]], y=[pts[i,1]], mode="markers+text",
+            name=lbl, text=lbl, textposition="top center",
+            marker=dict(size=20, line=dict(width=2, color="black"))
+        ))
+    fig.update_layout(height=500, width=900, xaxis_title="x", yaxis_title="y")
+    st.plotly_chart(fig, use_container_width=True)
 
-# ---- Cosine Matrix ----
-st.subheader("📈 Cosine Similarity Matrix (Equations)")
-valid_names=[n for n,v in zip(eqs,eq_vecs) if v is not None]
-valid_vecs=[unit(v) for v in eq_vecs if v is not None]
-if len(valid_vecs)>=2:
-    m=len(valid_vecs); S=np.zeros((m,m))
-    for i in range(m):
-        for j in range(m):
-            S[i,j]=cosine(valid_vecs[i],valid_vecs[j])
-    fig,ax=plt.subplots(figsize=(5.8,5),dpi=130)
-    im=ax.imshow(S,vmin=0,vmax=1,cmap="coolwarm")
-    ax.set_xticks(np.arange(m),labels=valid_names,rotation=25,ha="right")
-    ax.set_yticks(np.arange(m),labels=valid_names)
-    for i in range(m):
-        for j in range(m):
-            ax.text(j,i,f"{S[i,j]:.2f}",ha="center",va="center",
-                    color="white" if S[i,j]>0.6 else "black")
-    ax.set_title("Cosine Similarity Matrix",fontsize=15)
-    fig.colorbar(im,ax=ax,fraction=0.046,pad=0.04)
-    st.pyplot(fig,clear_figure=True)
+# --- Cosine similarity matrix ---
+if len(vectors) >= 2:
+    st.markdown("## 🔢 Cosine Similarity Matrix")
+    sim = cosine_similarity(vectors)
+    fig = px.imshow(sim, text_auto=".2f", color_continuous_scale="RdBu_r",
+                    x=labels, y=labels, aspect="auto")
+    fig.update_layout(height=500, width=900)
+    st.plotly_chart(fig, use_container_width=True)
 
-st.caption(f"Loaded {len(emb['words']):,} words from `{VEC_FILE}` — 100 dimensions each.")
+# --- Things to Fix / Next Steps ---
+with st.expander("🛠️ Things to Fix / Next Steps"):
+    st.markdown("""
+#### ⚙️ Technical Fixes (v1.0 polish)
+1. **Top-K sorting** – verify descending order remains consistent across local and deployed environments.  
+2. **Responsive chart scaling** – adjust PCA and correlation matrix heights for smaller screens.  
+3. **Instruction rendering** – ensure Markdown + LaTeX render cleanly post-deployment.  
+4. **Dynamic columns** – fixed `StreamlitInvalidColumnSpecError` (requires at least one non-empty equation).  
+5. **Aggregate stats table** – validate min/max computations against sample vectors.
+
+---
+
+#### 🚀 Planned Enhancements (v1.1 ideas)
+1. **🧩 Dimension Correlation Map**  
+   - Compare 100 embedding dimensions across top words from each equation.  
+   - Compute per-dimension Pearson or cosine correlation.  
+   - Visualize as a **heatmap** or **parallel coordinates plot** (Plotly).  
+
+2. **⚖️ Weighted Operations**  
+   - Allow syntax like: `0.3 * love + 0.7 * hate` for linear blends of semantic direction.  
+
+3. **🧠 Advanced Arithmetic**  
+   - Add exponentiation (`^`), root (`√`), or normalization (`|x|`) for experimental analysis.  
+
+4. **🧾 Metadata Panel**  
+   - Show dataset source (e.g., GloVe 6B, 100d), token count, and processing notes.  
+
+5. **🎨 Style Refinement**  
+   - Compact layout toggle for smaller devices.  
+   - Optional light/dark theme selector.  
+
+---
+
+_This dashboard is now feature-complete for v1.0, with groundwork for exploratory dimension analytics in v1.1._
+""")
