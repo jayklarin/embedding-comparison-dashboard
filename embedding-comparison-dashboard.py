@@ -1,124 +1,102 @@
 import streamlit as st
-import gensim.downloader as api
 import numpy as np
 import pandas as pd
-import altair as alt
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
+import seaborn as sns
+import plotly.express as px
+from sklearn.decomposition import PCA
+from sklearn.metrics.pairwise import cosine_similarity
 
-# ==================================================
-# 🧠 Embedding Comparison Dashboard (Tab-Focus Edition)
-# ==================================================
+st.set_page_config(page_title="Embedding Comparison Dashboard", layout="wide")
 
-st.set_page_config(
-    page_title="Embedding Comparison Dashboard",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+@st.cache_data
+def load_glove_model():
+    glove = {}
+    with open("glove_top10k_100d.txt", "r", encoding="utf8") as f:
+        for line in f:
+            values = line.split()
+            word = values[0]
+            vector = np.array(values[1:], dtype="float32")
+            glove[word] = vector
+    return glove
 
-# --- Title & Intro ---
-st.title("🧠 Embedding Comparison Dashboard")
-st.write(
-    "Type in four equations (e.g., `love - hate`, `king - man + woman`), "
-    "press **Tab** or **Return** to update results, and compare them on a shared semantic map."
-)
+glove = load_glove_model()
 
-# --- Collapsible Instructions ---
-with st.expander("📘 Instructions (click to collapse)", expanded=True):
-    st.markdown("""
-    **What is Cosine Similarity?**
+st.title("🧠 Embedding Comparison Dashboard (v8)")
+st.caption("Using local GloVe subset: glove_top10k_100d.txt (10,000 words, 100 dimensions)")
 
-    Cosine similarity measures how close two vectors point in the same direction:
-
-    $$
-    \\text{cosine\\_similarity}(A, B) = \\frac{A \\cdot B}{|A| \\, |B|}
-    $$
-
-    - **1.0 →** very similar meaning (same direction)  
-    - **0.0 →** unrelated  
-    - **−1.0 →** opposite meaning  
-
-    Supported operations:
-    - ➕ add vectors (`+`)
-    - ➖ subtract vectors (`-`)
-    - ✖️ multiply (`*`) — scales the combined meaning
-    - ➗ divide (`/`) — weakens or inverses the influence of the next word
-    """)
-
-# --- Load Embeddings ---
-@st.cache_resource(show_spinner=True)
-def load_model():
-    return api.load("glove-wiki-gigaword-100")
-
-model = load_model()
-
-# --- Compute Expression Safely ---
-def compute_expression(expr):
-    expr = expr.strip()
-    tokens = expr.replace("*", " * ").replace("/", " / ").split()
-    base_vec = None
-    op = "+"
-    for token in tokens:
-        if token in ["+", "-", "*", "/"]:
-            op = token
-        elif token in model:
-            vec = np.copy(model[token])
-            if base_vec is None:
-                base_vec = vec
-            else:
-                if op == "+": base_vec += vec
-                elif op == "-": base_vec -= vec
-                elif op == "*": base_vec *= vec
-                elif op == "/":
-                    denom = np.where(vec == 0, 1e-9, vec)
-                    base_vec /= denom
-    if base_vec is not None:
-        base_vec = base_vec / np.linalg.norm(base_vec)
-    return base_vec
-
-# --- Equation Panels ---
 cols = st.columns(4)
-default_eqs = ["love - hate", "love / hate", "hate / love", "love * hate"]
-colors = ["#3b82f6", "#f97316", "#22c55e", "#a855f7"]
+default_equations = ["love", "hate", "hate / love", "love * hate"]
+equations = [c.text_input(f"Equation {i+1}", default_equations[i]) for i, c in enumerate(cols)]
+top_k = st.slider("Select Top-K Similar Words", 3, 20, 10)
 
-equations, vectors, dataframes = [], [], []
+def find_similar_words(word, top_k=10):
+    if word not in glove:
+        return []
+    base_vec = glove[word]
+    sims = {w: cosine_similarity([base_vec], [v])[0][0] for w, v in glove.items()}
+    return sorted(sims.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
-for i, c in enumerate(cols):
-    with c:
-        eq = st.text_input(f"Equation {i+1}", default_eqs[i], key=f"eq{i+1}")
-        vec = compute_expression(eq)
-        if vec is not None:
-            words, sims = zip(*model.most_similar(positive=[vec], topn=10))
-            df = pd.DataFrame({"Word": words, "Similarity": sims})
-            chart = (
-                alt.Chart(df)
-                .mark_bar(color=colors[i])
-                .encode(x="Similarity:Q", y=alt.Y("Word:N", sort="-x"))
-                .properties(height=250)
-            )
-            st.subheader(f"Equation {i+1}")
-            st.altair_chart(chart, use_container_width=True)
-            equations.append(eq)
-            vectors.append(vec)
-            dataframes.append(df)
+results = {eq: find_similar_words(eq.split()[0], top_k) for eq in equations}
 
-# --- Shared PCA Plot ---
-if len(vectors) > 1:
-    st.markdown("### 📈 Shared Semantic Projection (PCA)")
-    pca = PCA(n_components=2)
-    coords = pca.fit_transform(np.vstack(vectors))
-    fig, ax = plt.subplots(figsize=(6, 4))
-    for i, (x, y) in enumerate(coords):
-        ax.scatter(x, y, color=colors[i], s=100, label=equations[i])
-        ax.text(x + 0.02, y, equations[i], fontsize=10)
-    ax.set_title("Semantic Space (2D PCA)")
-    ax.legend()
-    st.pyplot(fig)
+# ==============================
+# TOP-K MATCHES PER EQUATION
+# ==============================
+st.subheader("📊 Top-K Semantic Matches per Equation")
+cols = st.columns(4)
+for i, (eq, data) in enumerate(results.items()):
+    df = pd.DataFrame(data, columns=["Word", "Cosine Similarity"])
+    cols[i].bar_chart(df.set_index("Word"))
 
-# --- Pairwise Similarity Matrix ---
-if len(vectors) > 1:
-    st.markdown("### 🔢 Pairwise Equation Similarity")
-    sim = cosine_similarity(vectors)
-    df_sim = pd.DataFrame(sim, columns=equations, index=equations)
-    st.dataframe(df_sim.style.background_gradient(cmap="viridis").format("{:.3f}"))
+# ==============================
+# PCA PROJECTION (Equations + Top Words)
+# ==============================
+st.subheader("🧭 PCA Projection (Equations + Top Words)")
+
+all_words = []
+for eq, data in results.items():
+    all_words.append(eq)
+    all_words.extend([w for w, _ in data])
+unique_words = list(set(all_words))
+
+X = np.array([glove[w] for w in unique_words if w in glove])
+pca = PCA(n_components=2)
+coords = pca.fit_transform(X)
+df_pca = pd.DataFrame(coords, columns=["x", "y"], index=[w for w in unique_words if w in glove])
+
+fig = px.scatter(
+    df_pca,
+    x="x",
+    y="y",
+    text=df_pca.index,
+    title="PCA Projection (Equations + Top Words)",
+)
+fig.update_traces(textposition="top center")
+fig.update_layout(height=600)
+st.plotly_chart(fig, use_container_width=True)
+
+# ==============================
+# COSINE SIMILARITY MATRIX (EQUATIONS)
+# ==============================
+st.subheader("📈 Cosine Similarity Matrix (Equations Only)")
+
+vectors = np.array([glove[w.split()[0]] for w in equations if w.split()[0] in glove])
+sim_matrix = cosine_similarity(vectors)
+corr_df = pd.DataFrame(sim_matrix, index=equations, columns=equations)
+
+fig, ax = plt.subplots(figsize=(6, 5))
+sns.heatmap(corr_df, annot=True, cmap="coolwarm", square=True, cbar=True)
+st.pyplot(fig)
+
+# ==============================
+# CORRELATION MATRIX (FULL TOP WORDS)
+# ==============================
+st.subheader("🧩 Correlation Matrix (Top Words Combined)")
+
+all_vectors = np.array([glove[w] for w in unique_words if w in glove])
+corr = np.corrcoef(all_vectors)
+corr_df_full = pd.DataFrame(corr, index=[w for w in unique_words if w in glove], columns=[w for w in unique_words if w in glove])
+
+fig, ax = plt.subplots(figsize=(8, 6))
+sns.heatmap(corr_df_full, cmap="viridis", xticklabels=False, yticklabels=False)
+st.pyplot(fig)
