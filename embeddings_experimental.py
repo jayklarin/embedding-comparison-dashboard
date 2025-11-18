@@ -193,3 +193,76 @@ for i, eq in enumerate(eqs):
 
     ax.set_title(eq, fontsize=9)
     cmcols[i].pyplot(fig)
+
+# ----------------- Dimension Polarity Extremes (Essence Explorer) -----------------
+st.header("🔮 Dimension Essences — Top Positive & Negative Words")
+
+# Precompute once and cache
+@st.cache_data(show_spinner=False)
+def compute_dimension_extremes(words, matrix, top_k=15):
+    dims = matrix.shape[1]
+    result = {}
+
+    for d in range(dims):
+        col = matrix[:, d]
+
+        # Top positive
+        pos_idx = np.argsort(col)[-top_k:][::-1]
+        # Top negative
+        neg_idx = np.argsort(col)[:top_k]
+
+        result[d] = {
+            "top_positive": [(words[i], float(col[i])) for i in pos_idx],
+            "top_negative": [(words[i], float(col[i])) for i in neg_idx],
+        }
+
+    return result
+
+dimension_extremes = compute_dimension_extremes(
+    emb["words"],
+    emb["matrix"],
+    top_k=15
+)
+
+# UI
+dim = st.slider("Select embedding dimension", 0, 99, 0)
+
+st.subheader(f"📈 Dimension {dim} — Polarity Extremes")
+ext = dimension_extremes[dim]
+
+# ----------------- Full Dimension Essence Table -----------------
+st.header("🧭 Full Dimension Essence Table (All 100 Dimensions)")
+
+@st.cache_data(show_spinner=False)
+def compute_dimension_essence_table(words, matrix, top_k=10):
+    dims = matrix.shape[1]
+    rows = []
+
+    for d in range(dims):
+        col = matrix[:, d]
+
+        # top-k positive
+        pos_idx = np.argsort(col)[-top_k:][::-1]
+        pos_words = [words[i] for i in pos_idx]
+
+        # top-k negative
+        neg_idx = np.argsort(col)[:top_k]
+        neg_words = [words[i] for i in neg_idx]
+
+        rows.append({
+            "dim": d,
+            "top_positive": ", ".join(pos_words),
+            "top_negative": ", ".join(neg_words)
+        })
+
+    return pd.DataFrame(rows)
+
+essence_df = compute_dimension_essence_table(
+    emb["words"], emb["matrix"], top_k=10
+)
+
+st.dataframe(
+    essence_df,
+    use_container_width=True,
+    hide_index=True
+)
