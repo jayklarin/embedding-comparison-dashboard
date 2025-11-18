@@ -195,7 +195,7 @@ for i, eq in enumerate(eqs):
     cmcols[i].pyplot(fig)
 
 # ----------------- Dimension Polarity Extremes (Essence Explorer) -----------------
-st.header("🔮 Dimension Essences — Top Positive & Negative Words")
+# st.header("🔮 Dimension Essences — Top Positive & Negative Words")
 
 # Precompute once and cache
 @st.cache_data(show_spinner=False)
