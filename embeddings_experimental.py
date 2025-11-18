@@ -224,11 +224,11 @@ dimension_extremes = compute_dimension_extremes(
     top_k=15
 )
 
-# UI
-dim = st.slider("Select embedding dimension", 0, 99, 0)
+# # UI
+# dim = st.slider("Select embedding dimension", 0, 99, 0)
 
-st.subheader(f"📈 Dimension {dim} — Polarity Extremes")
-ext = dimension_extremes[dim]
+# st.subheader(f"📈 Dimension {dim} — Polarity Extremes")
+# ext = dimension_extremes[dim]
 
 # ----------------- Full Dimension Essence Table -----------------
 st.header("🧭 Full Dimension Essence Table (All 100 Dimensions)")
